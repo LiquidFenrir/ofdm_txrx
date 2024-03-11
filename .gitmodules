@@ -1,0 +1,9 @@
+[submodule "kissfft"]
+	path = kissfft
+	url = https://github.com/mborgerding/kissfft/
+[submodule "bitstream"]
+	path = bitstream
+	url = https://github.com/eerimoq/bitstream
+[submodule "dr_libs"]
+	path = dr_libs
+	url = https://github.com/mackron/dr_libs
