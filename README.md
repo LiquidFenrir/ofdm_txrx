@@ -1,12 +1,13 @@
 # OFDM_TxRx
 
 Simple application of what I learned about the OFDM signals technique, here for posterity and backing up.  
-Lets you encode a byte stream (no more than 65536 long, though not tested above 2000 or so) in packets of 160 (NFFT with cylic prefix) samples, with some headers and footers to help.  
+Lets you encode a byte stream in packets of 160 (NFFT with cylic prefix) samples, with some headers and footers to help.  
 Resistance to noise is nil. Possible improvement path.
 
 ## Usage
 
-Simple API demonstrated in `source/main.c`, the logic itself would benefit from more comments... probably later
+Simple API demonstrated in `source/main.c`, the logic itself would benefit from more comments... probably later  
+See `example_screenshot.png` for a showcase of scramble/no-scramble being incompatible.  
 
 ## License
 

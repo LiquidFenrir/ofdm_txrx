@@ -10,6 +10,24 @@
 #include "kiss_fft.h"
 #include "kiss_fftr.h"
 
+#define OFDM_SCRAMBLE_INIT_STATE 0x5D
+static uint8_t ofdm_scrambling_alg(uint8_t* output, const uint8_t* input, const size_t length, uint8_t state)
+{
+    struct bitstream_reader_t reader;
+    bitstream_reader_init(&reader, input);
+    struct bitstream_writer_t writer;
+    bitstream_writer_init(&writer, output);
+    const size_t length_in_bits = length * 8;
+    for(size_t i = 0; i < length_in_bits; ++i)
+    {
+        const uint8_t newbit = ((state & (1u << 0)) >> 0) ^ ((state & (1u << 3)) >> 3);
+        bitstream_writer_write_bit(&writer, newbit ^ bitstream_reader_read_bit(&reader));
+        state >>= 1;
+        state |= newbit << 6;
+    }
+    return state;
+}
+
 static void cross_correlation(const float* check_against, const float* check, const int n, int* maximum_index_out, float* maximum_value_out)
 {
     int lastArrayIndex = n - 1;
@@ -89,7 +107,8 @@ struct ofdm_rx_s {
     int max_idx_count_max;
     int max_idx_count_max_max;
     float max_val;
-    unsigned char* symbol_output_buffer;
+    uint8_t* symbol_output_buffer;
+    uint8_t* descrambled_data;
     unsigned char* data_output_buffer; // user provided
     float header_max_correl;
     int disabled;
@@ -101,15 +120,18 @@ struct ofdm_rx_s {
     unsigned data_length, data_length_done;
     uint32_t checksum;
     uint32_t expect_checksum;
+    uint8_t scrambling_state;
 };
 struct ofdm_tx_s {
     kiss_fftr_cfg cfg_send;
     unsigned char* meta_buffer;
+    uint8_t* scrambled_data;
     float complex work_buffer[OFDM_TXRX_NFFT];
     float samples_buffer[OFDM_TXRX_NFFT];
     float scaler;
 };
 struct ofdm_txrx_s {
+    int flags;
     int bits_per_qam;
     int bytes_per_symbol;
     int max_range;
@@ -125,20 +147,24 @@ static void ofdm_tx_delete(struct ofdm_tx_s* tx)
 {
     kiss_fftr_free(tx->cfg_send);
     free(tx->meta_buffer);
+    free(tx->scrambled_data); // may be NULL
     free(tx);
 }
 static void ofdm_rx_delete(struct ofdm_rx_s* rx)
 {
     kiss_fftr_free(rx->cfg_recv);
     free(rx->symbol_output_buffer);
+    if(rx->symbol_output_buffer != rx->descrambled_data)
+        free(rx->descrambled_data);
     free(rx);
 }
 ofdm_t ofdm_new(int bits_per_qam, int flags)
 {
-    if(!(flags & OFDM_ALLOW_ALL))
+    if(!(flags & OFDM_ALLOW_DIRECTION))
         return NULL;
 
     ofdm_t out = calloc(1, sizeof(struct ofdm_txrx_s));
+    out->flags = flags;
     out->tx = calloc(1, sizeof(struct ofdm_tx_s));
     out->rx = calloc(1, sizeof(struct ofdm_rx_s));
 
@@ -207,6 +233,10 @@ ofdm_t ofdm_new(int bits_per_qam, int flags)
         out->rx->header_max_correl = sqrtf(out->rx->header_max_correl);
         // printf("sqrt max correl: %.3f\n", header_max_correl);
         out->rx->symbol_output_buffer = malloc(out->bytes_per_symbol);
+        if(flags & OFDM_ALLOW_SCRAMBLE)
+            out->rx->descrambled_data = malloc(out->bytes_per_symbol);
+        else
+            out->rx->descrambled_data = out->rx->symbol_output_buffer;
         out->rx->initial = 1.0f + I * 0.0f;
         out->rx->samples_seen = -OFDM_TXRX_NFFT;
     }
@@ -219,6 +249,8 @@ ofdm_t ofdm_new(int bits_per_qam, int flags)
     else
     {
         out->tx->meta_buffer = malloc(out->bytes_per_symbol);
+        if(flags & OFDM_ALLOW_SCRAMBLE)
+            out->tx->scrambled_data = malloc(out->bytes_per_symbol);
     }
 
     // printf("ofdm %p rx %p tx %p\n", out, out->rx, out->tx);
@@ -380,6 +412,7 @@ ofdm_txrx_state_t ofdm_read_samples(ofdm_t ofdm, ofdm_read_samples_cb_t callback
         ofdm->rx->max_idx_count_max_max = 0;
         ofdm->rx->locked = true;
         ofdm->rx->initial = temp_initial;
+        ofdm->rx->scrambling_state = OFDM_SCRAMBLE_INIT_STATE;
         // printf("initial: r %.2f i %.2f\n", crealf(ofdm->rx->initial), cimagf(ofdm->rx->initial));
     }
 
@@ -441,10 +474,8 @@ ofdm_txrx_state_t ofdm_read_samples(ofdm_t ofdm, ofdm_read_samples_cb_t callback
         assert(ofdm->rx->output_buffer_imag[i] != -1);
         // printf("Carrier %d @ %d: r %.2f i %.2f -> r %.2f i %.2f\n", i, ofdm->carrier_indices[i], crealf(original), cimagf(original), crealf(scaled), cimagf(scaled));
     }
-    // printf("points:");
     for(int i = 0; i < OFDM_CARRIER_AMOUNT; ++i)
     {
-        // printf(" %d_%d", ofdm->rx->output_buffer_real[i], ofdm->rx->output_buffer_imag[i]);
         for(int j = ((ofdm->bits_per_qam / 2) - 1); j >= 0; --j)
         {
             bitstream_writer_write_bit(&writer, (ofdm->rx->output_buffer_real[i] & (1 << j)) == 0 ? 0 : 1);
@@ -454,30 +485,23 @@ ofdm_txrx_state_t ofdm_read_samples(ofdm_t ofdm, ofdm_read_samples_cb_t callback
             bitstream_writer_write_bit(&writer, (ofdm->rx->output_buffer_imag[i] & (1 << j)) == 0 ? 0 : 1);
         }
     }
-    // printf("\n");
-    
-    /*
-    printf("bytes: ");
-    for(int i = 0; i < BYTES_PER_SYMBOL; ++i)
-    {
-        printf("%02x", symbol_output_buffer[i]);
-    }
-    printf("\n");
-    */
+
+    if(ofdm->flags & OFDM_ALLOW_SCRAMBLE)
+        ofdm->rx->scrambling_state = ofdm_scrambling_alg(ofdm->rx->descrambled_data, ofdm->rx->symbol_output_buffer, ofdm->bytes_per_symbol, ofdm->rx->scrambling_state);
 
     if(ofdm->rx->data_length == 0)
     {
 #if OFDM_TXRX_MAX_PACKET_BYTES >= (1u << 16)
-        ofdm->rx->data_length |= ((unsigned)ofdm->rx->symbol_output_buffer[ofdm->bytes_per_symbol - 2] << 8);
+        ofdm->rx->data_length |= ((unsigned)ofdm->rx->descrambled_data[ofdm->bytes_per_symbol - 2] << 8);
 #endif
-        ofdm->rx->data_length |= (unsigned)ofdm->rx->symbol_output_buffer[ofdm->bytes_per_symbol - 1];
+        ofdm->rx->data_length |= (unsigned)ofdm->rx->descrambled_data[ofdm->bytes_per_symbol - 1];
         ofdm->rx->data_length_done = 0;
 
         ofdm->rx->expect_checksum = \
-            ((unsigned)ofdm->rx->symbol_output_buffer[0] << 24)
-            | ((unsigned)ofdm->rx->symbol_output_buffer[1] << 16)
-            | ((unsigned)ofdm->rx->symbol_output_buffer[2] << 8)
-            | ((unsigned)ofdm->rx->symbol_output_buffer[3]);
+            ((unsigned)ofdm->rx->descrambled_data[0] << 24)
+            | ((unsigned)ofdm->rx->descrambled_data[1] << 16)
+            | ((unsigned)ofdm->rx->descrambled_data[2] << 8)
+            | ((unsigned)ofdm->rx->descrambled_data[3]);
         ofdm->rx->checksum = 0;
 
         out = OFDM_TXRX_NEW_PACKET;
@@ -490,11 +514,11 @@ ofdm_txrx_state_t ofdm_read_samples(ofdm_t ofdm, ofdm_read_samples_cb_t callback
         {
             memcpy(
                 &ofdm->rx->data_output_buffer[ofdm->rx->data_length_done],
-                ofdm->rx->symbol_output_buffer,
+                ofdm->rx->descrambled_data,
                 remaining_block
             );
         }
-        ofdm->rx->checksum = crc32(ofdm->rx->symbol_output_buffer, remaining_block, ofdm->rx->checksum);
+        ofdm->rx->checksum = crc32(ofdm->rx->descrambled_data, remaining_block, ofdm->rx->checksum);
         ofdm->rx->data_length_done += remaining_block;
 
         if(ofdm->rx->data_length_done > ofdm->rx->data_length)
@@ -565,9 +589,15 @@ size_t ofdm_get_packet_send_length(ofdm_t ofdm, size_t data_length)
 }
 
 // data of length size ofdm->bytes_per_symbol
-static void ofdm_write_samples_chunk(ofdm_t ofdm, const unsigned char* data, ofdm_write_samples_cb_t callback, void* user_data)
+static uint8_t ofdm_write_samples_chunk(ofdm_t ofdm, uint8_t state, const unsigned char* data, ofdm_write_samples_cb_t callback, void* user_data)
 {
     struct bitstream_reader_t reader;
+    if(ofdm->flags & OFDM_ALLOW_SCRAMBLE)
+    {
+        state = ofdm_scrambling_alg(ofdm->tx->scrambled_data, data, ofdm->bytes_per_symbol, state);
+        data = ofdm->tx->scrambled_data;
+    }
+    
     bitstream_reader_init(&reader, data);
     for(int i = 0; i < ofdm->bytes_per_symbol; ++i)
     {
@@ -585,6 +615,7 @@ static void ofdm_write_samples_chunk(ofdm_t ofdm, const unsigned char* data, ofd
     // cyclic prefix
     callback(&ofdm->tx->samples_buffer[OFDM_TXRX_NFFT * 3 / 4], OFDM_TXRX_NFFT / 4, user_data);
     callback(ofdm->tx->samples_buffer, OFDM_TXRX_NFFT, user_data);
+    return state;
 }
 
 int ofdm_write_samples(ofdm_t ofdm, const unsigned char* data, size_t data_length, ofdm_write_samples_cb_t callback, void* user_data)
@@ -606,19 +637,19 @@ int ofdm_write_samples(ofdm_t ofdm, const unsigned char* data, size_t data_lengt
     ofdm->tx->meta_buffer[ofdm->bytes_per_symbol - 2] = (data_length >> 8) & 0xff;
 #endif
     ofdm->tx->meta_buffer[ofdm->bytes_per_symbol - 1] = (data_length) & 0xff;
-    ofdm_write_samples_chunk(ofdm, ofdm->tx->meta_buffer, callback, user_data);
+    uint8_t state = ofdm_write_samples_chunk(ofdm, OFDM_SCRAMBLE_INIT_STATE, ofdm->tx->meta_buffer, callback, user_data);
     
     long j = 0;
     for(long i = 0; i < div_res.quot; ++i, j += ofdm->bytes_per_symbol)
     {
-        ofdm_write_samples_chunk(ofdm, &data[j], callback, user_data);
+        state = ofdm_write_samples_chunk(ofdm, state, &data[j], callback, user_data);
     }
 
     if(div_res.rem)
     {
         memset(ofdm->tx->meta_buffer, 0, ofdm->bytes_per_symbol);
         memcpy(ofdm->tx->meta_buffer, &data[j], div_res.rem);
-        ofdm_write_samples_chunk(ofdm, ofdm->tx->meta_buffer, callback, user_data);
+        state = ofdm_write_samples_chunk(ofdm, state, ofdm->tx->meta_buffer, callback, user_data);
     }
 
     memset(ofdm->tx->samples_buffer, 0, sizeof(ofdm->tx->samples_buffer));
