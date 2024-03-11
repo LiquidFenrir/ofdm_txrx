@@ -17,21 +17,12 @@ int main(int argc,char ** argv)
     bool want_print_hex = false;
     bool want_meta_check = false;
     int BITS_PER_QAM = 0;
+    bool print_help = argc == 1;
 
     for(int i = 1; i < argc; ++i)
     {
         if(strcmp(argv[i], "-h") == 0)
-            printf( "Usage: %s [-s] [-m] [-p] [-x] -q=<bits per QAM>"
-                    " [-f <input wav path>]"
-                    " [-o <output wav path>]"
-                    " [-d <output data source path>]"
-                    "\n\n"
-                    "-s: enable scrambling\n"
-                    "-m: enable edge case check\n"
-                    "-p: print data as text\n"
-                    "-x: print data as hex\n"
-                    "-q: >= 2, even number\n"
-            );
+            print_help = true;
         else
         if(strcmp(argv[i], "-s") == 0)
             want_scramble = true;
@@ -71,6 +62,22 @@ int main(int argc,char ** argv)
                 return EXIT_FAILURE;
             out_data_filename = argv[i];
         }
+    }
+
+    if(print_help)
+    {
+        printf( "Usage: %s [-s] [-m] [-p] [-x] -q=<bits per QAM>"
+                " [-f <input wav path>]"
+                " [-o <output wav path>]"
+                " [-d <output data source path>]"
+                "\n\n"
+                "-s: enable scrambling\n"
+                "-m: enable edge case check\n"
+                "-p: print data as text\n"
+                "-x: print data as hex\n"
+                "-q: >= 2, even number\n",
+                argv[0]);
+        return EXIT_SUCCESS;
     }
 
     if(BITS_PER_QAM == 0 || (BITS_PER_QAM & 1) == 1)
