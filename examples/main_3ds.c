@@ -49,7 +49,7 @@ static int read_and_handle_file(const char* in_filename, bool want_scramble)
             {
             case OFDM_TXRX_NEW_PACKET:
                 packet_len = ofdm_get_packet_recv_size(ofdm);
-                // printf("Have new packet: %5zd\n", packet_len);
+                printf("Have new packet: %5zd\n", packet_len);
                 break;
             case OFDM_TXRX_PACKET_COMPLETE_FAILURE:
                 ofdm_get_packet_recv_checksums(ofdm, &checksum, &expected);
@@ -58,7 +58,7 @@ static int read_and_handle_file(const char* in_filename, bool want_scramble)
                 break;
             case OFDM_TXRX_PACKET_COMPLETE_SUCCESS:
                 ofdm_get_packet_recv_checksums(ofdm, &checksum, &expected);
-                // printf("Have packet, %5zd checksum: 0x%08lx (wanted 0x%08lx)\n", packet_len, (unsigned long)checksum, (unsigned long)expected);
+                printf("Have packet, %5zd checksum: 0x%08lx (wanted 0x%08lx)\n", packet_len, (unsigned long)checksum, (unsigned long)expected);
                 if(want_print_hex)
                 {
                     for(size_t k = 0; k < packet_len; ++k)

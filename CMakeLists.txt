@@ -1,15 +1,22 @@
 cmake_minimum_required(VERSION 3.11)
 
-project(ofdm_txrx VERSION 0.0.1 LANGUAGES C)
+project(ofdm_txrx VERSION 0.0.1 LANGUAGES C ASM)
 message(STATUS "CMAKE_BUILD_TYPE: ${CMAKE_BUILD_TYPE}")
 
 option(OFDM_BUILD_EXAMPLES "Build ofdm_txrx examples" ON)
 
-add_library(${PROJECT_NAME} STATIC
+add_library(${PROJECT_NAME} STATIC)
+target_sources(${PROJECT_NAME} PRIVATE
     source/ofdm.c
     bitstream/src/bitstream.c
     crc32/src/crc32.c
+    source/fft.c
 )
+if(NINTENDO_3DS)
+    target_sources(${PROJECT_NAME} PRIVATE
+        source/fft_armv6.S
+    )
+endif()
 
 target_compile_options(${PROJECT_NAME} PUBLIC
     -Wall -Wextra
@@ -23,8 +30,6 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     crc32/include
 )
 
-target_compile_features(${PROJECT_NAME} PRIVATE c_std_11)
-
 set(KISSFFT_PKGCONFIG OFF CACHE BOOL "KISSFFT_PKGCONFIG" FORCE)
 set(KISSFFT_TEST OFF CACHE BOOL "KISSFFT_TEST" FORCE)
 set(KISSFFT_TOOLS OFF CACHE BOOL "KISSFFT_TOOLS" FORCE)
@@ -34,6 +39,8 @@ add_subdirectory(kissfft)
 target_link_libraries(${PROJECT_NAME} PRIVATE
     kissfft
 )
+
+target_compile_features(${PROJECT_NAME} PRIVATE c_std_11)
 
 if(OFDM_BUILD_EXAMPLES)
     if(NINTENDO_3DS) # arm-none-eabi-cmake

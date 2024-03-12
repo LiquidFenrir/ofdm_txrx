@@ -5,10 +5,10 @@
 #include <stdbool.h>
 #include <assert.h>
 #include <complex.h>
+#include <math.h>
 #include "bitstream.h"
 #include "crc32.h"
-#include "kiss_fft.h"
-#include "kiss_fftr.h"
+#include "fft.h"
 
 #define OFDM_SCRAMBLE_INIT_STATE 0x5D
 static uint8_t ofdm_scrambling_alg(uint8_t* output, const uint8_t* input, const size_t length, uint8_t state)
@@ -96,7 +96,7 @@ static const float complex ofdm_pilots_expect[4] = {
 #define OFDM_CARRIER_AMOUNT ((OFDM_CARRIER_END) - (OFDM_CARRIER_START) - 4)
 
 struct ofdm_rx_s {
-    kiss_fftr_cfg cfg_recv;
+    ofdm_fft_t cfg_recv;
     size_t samples_seen;
     unsigned long long max_idx;
     unsigned long long max_idx_max;
@@ -123,7 +123,7 @@ struct ofdm_rx_s {
     uint8_t scrambling_state;
 };
 struct ofdm_tx_s {
-    kiss_fftr_cfg cfg_send;
+    ofdm_fft_t cfg_send;
     unsigned char* meta_buffer;
     uint8_t* scrambled_data;
     float complex work_buffer[OFDM_TXRX_NFFT];
@@ -145,14 +145,14 @@ struct ofdm_txrx_s {
 
 static void ofdm_tx_delete(struct ofdm_tx_s* tx)
 {
-    kiss_fftr_free(tx->cfg_send);
+    ofdm_fft_delete(tx->cfg_send);
     free(tx->meta_buffer);
     free(tx->scrambled_data); // may be NULL
     free(tx);
 }
 static void ofdm_rx_delete(struct ofdm_rx_s* rx)
 {
-    kiss_fftr_free(rx->cfg_recv);
+    ofdm_fft_delete(rx->cfg_recv);
     free(rx->symbol_output_buffer);
     if(rx->symbol_output_buffer != rx->descrambled_data)
         free(rx->descrambled_data);
@@ -198,7 +198,7 @@ ofdm_t ofdm_new(int bits_per_qam, int flags)
         out->mapping[k++] = (float)i;
     }
 
-    out->tx->cfg_send = kiss_fftr_alloc(OFDM_TXRX_NFFT, 1, NULL, NULL);
+    out->tx->cfg_send = ofdm_fft_new(1);
 
     for(int i = 0; i < 4; ++i)
     {
@@ -206,7 +206,7 @@ ofdm_t ofdm_new(int bits_per_qam, int flags)
         out->tx->work_buffer[ofdm_pilots_indices[i]] = ofdm_pilots_expect[i] * out->max_range;
         // printf("Re Im %+.2f %+.2f\n", crealf(scaled_out_buffer[ofdm_pilots_indices[i]]), cimagf(scaled_out_buffer[ofdm_pilots_indices[i]]));
     }
-    kiss_fftri(out->tx->cfg_send, (const kiss_fft_cpx*)out->tx->work_buffer, out->expect_header);
+    ofdm_fft_backward_c2r(out->tx->cfg_send, out->tx->work_buffer, out->expect_header);
     // out->tx->scaler = 1.0f / (OFDM_TXRX_NFFT * sqrtf(out->max_range * 2.0f));
     out->tx->scaler = 1.0f / (OFDM_TXRX_NFFT * out->max_range);
     for(int i = 0; i < OFDM_TXRX_NFFT; ++i)
@@ -227,7 +227,7 @@ ofdm_t ofdm_new(int bits_per_qam, int flags)
     }
     else
     {
-        out->rx->cfg_recv = kiss_fftr_alloc(OFDM_TXRX_NFFT, 0, NULL, NULL);
+        out->rx->cfg_recv = ofdm_fft_new(0);
         // printf("max correl: %.3f\n", header_max_correl);
         cross_correlation(out->expect_header, out->expect_header, OFDM_TXRX_NFFT, NULL, &out->rx->header_max_correl);
         out->rx->header_max_correl = sqrtf(out->rx->header_max_correl);
@@ -363,7 +363,7 @@ ofdm_txrx_state_t ofdm_read_samples(ofdm_t ofdm, ofdm_read_samples_cb_t callback
     {
         // printf("locking work_buffer_section_idx: %d\n", ofdm->rx->work_buffer_section_idx);
         const float* const section = &ofdm->rx->samples_buffer[ofdm->rx->work_buffer_section_idx];
-        kiss_fftr(ofdm->rx->cfg_recv, section, (kiss_fft_cpx*)(ofdm->rx->work_buffer));
+        ofdm_fft_forward_r2c(ofdm->rx->cfg_recv, section, ofdm->rx->work_buffer);
         float complex pilots_found[4];
         for(int i = 0; i < 4; ++i)
         {
@@ -427,7 +427,7 @@ ofdm_txrx_state_t ofdm_read_samples(ofdm_t ofdm, ofdm_read_samples_cb_t callback
 
     const int offset = ofdm->rx->disabled + OFDM_TXRX_NFFT;
     const float* const section = &ofdm->rx->samples_buffer[offset];
-    kiss_fftr(ofdm->rx->cfg_recv, section, (kiss_fft_cpx*)(ofdm->rx->work_buffer));
+    ofdm_fft_forward_r2c(ofdm->rx->cfg_recv, section, ofdm->rx->work_buffer);
 
     // printf("disabled inner %d\n", ofdm->rx->disabled);
     if(ofdm->rx->disabled < 0)
@@ -606,7 +606,7 @@ static uint8_t ofdm_write_samples_chunk(ofdm_t ofdm, uint8_t state, const unsign
         // printf("index real, imag: %d %d\n", index_real, index_imag);
         ofdm->tx->work_buffer[ofdm->carrier_indices[i]] = ofdm->mapping[index_real] + I * ofdm->mapping[index_imag];
     }
-    kiss_fftri(ofdm->tx->cfg_send, (const kiss_fft_cpx*)ofdm->tx->work_buffer, ofdm->tx->samples_buffer);
+    ofdm_fft_backward_c2r(ofdm->tx->cfg_send, ofdm->tx->work_buffer, ofdm->tx->samples_buffer);
     for(int i = 0; i < OFDM_TXRX_NFFT; ++i)
     {
         ofdm->tx->samples_buffer[i] *= ofdm->tx->scaler;

@@ -154,10 +154,10 @@ int main(int argc,char ** argv)
     {
         drwav_data_format format = {
             .container = drwav_container_riff,
-            .format = DR_WAVE_FORMAT_PCM,
+            .format = DR_WAVE_FORMAT_IEEE_FLOAT,
             .channels = 1,
             .sampleRate = 44100,
-            .bitsPerSample = 16,
+            .bitsPerSample = 32,
         };
         if (!drwav_init_file_write(&wav, out_filename, &format, NULL))
             return EXIT_FAILURE;
@@ -169,7 +169,7 @@ int main(int argc,char ** argv)
         unsigned char* send_data = calloc(OFDM_TXRX_MAX_PACKET_BYTES, 1);
         size_t samples_output_length = ofdm_get_packet_send_length(ofdm, OFDM_TXRX_MAX_PACKET_BYTES);
         printf("Outputting %zd samples\n", samples_output_length);
-        int16_t* samples_output = malloc(samples_output_length * sizeof(int16_t));
+        float* samples_output = malloc(samples_output_length * sizeof(float));
 
         FILE* fh = fopen(out_data_filename,"rb");
         fseek(fh, 0, SEEK_END);
@@ -179,14 +179,14 @@ int main(int argc,char ** argv)
         for(long i = 0; i < divided.quot; ++i)
         {
             fread(send_data, 1, OFDM_TXRX_MAX_PACKET_BYTES, fh);
-            ofdm_write_samples(ofdm, send_data, OFDM_TXRX_MAX_PACKET_BYTES, ofdm_callback_write_pcm16_samples, &(ofdm_samples_t){0, samples_output});
+            ofdm_write_samples(ofdm, send_data, OFDM_TXRX_MAX_PACKET_BYTES, ofdm_callback_write_f32_samples, &(ofdm_samples_t){0, samples_output});
             drwav_write_pcm_frames(&wav, samples_output_length, samples_output);
         }
         if(divided.rem)
         {
             fread(send_data, 1, divided.rem, fh);
             samples_output_length = ofdm_get_packet_send_length(ofdm, divided.rem);
-            ofdm_write_samples(ofdm, send_data, divided.rem, ofdm_callback_write_pcm16_samples, &(ofdm_samples_t){0, samples_output});
+            ofdm_write_samples(ofdm, send_data, divided.rem, ofdm_callback_write_f32_samples, &(ofdm_samples_t){0, samples_output});
             drwav_write_pcm_frames(&wav, samples_output_length, samples_output);
         }
 

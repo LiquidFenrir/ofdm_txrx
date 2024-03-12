@@ -13,7 +13,8 @@ extern "C" {
 
 // #define OFDM_TXRX_MAX_PACKET_BYTES (1u << 8)
 #define OFDM_TXRX_MAX_PACKET_BYTES (1u << 16)
-#define OFDM_TXRX_NFFT 128
+#define OFDM_TXRX_POW2 7
+#define OFDM_TXRX_NFFT (1 << (OFDM_TXRX_POW2))
 #define OFDM_ALLOW_RX 1
 #define OFDM_ALLOW_TX 2
 #define OFDM_ALLOW_SCRAMBLE 4
